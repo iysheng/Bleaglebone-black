@@ -23,11 +23,12 @@ MODULE_DESCRIPTION("A LED test driver for the BBB");
 MODULE_VERSION("0.1");
 
 #define STATE_SIZE 16
+#define BUF_SIZE 32
 
 static unsigned int gpioLED = 60;       ///< hard coding the LED gpio for this example to P9_12 (GPIO60)
 static unsigned int gpioKEY = 65;       ///< hard coding the LED gpio for this example to P8_18 (GPIO65)
 
-static unsigned int numberPresses = 0;  ///< For information, store the number of button presses
+//static unsigned int numberPresses = 0;  ///< For information, store the number of button presses
 static bool	    ledOn = 0;          ///< Is the LED on or off? Used to invert its state (off by default)
 
 static unsigned  int major;
@@ -40,6 +41,7 @@ static irq_handler_t KEY_irq_handler(unsigned int irq, void *dev_id, struct pt_r
 static struct led_dev{
 	struct cdev cdev;
 	struct mutex mutex;
+	atomic_t numberLed;
 	char state[STATE_SIZE];
 };
 
@@ -49,20 +51,18 @@ static struct led_dev *led_devp;
 
 static int led_open(struct inode *inode, struct file *file)
 {
-    char *buf = "open";
     file->private_data = led_devp;
-	//sprintf(led_devp->state,"%s","opened");
+	//atomic_set(&(file->private_data->numberLed),0);
+	atomic_set(&(led_devp->numberLed),0);
 	strcpy(led_devp->state,"opened");
-	printk("led %s.\n",led_devp->state);
+	printk("led %s and numberLed is %d.\n",led_devp->state,atomic_read(&(led_devp->numberLed)));
     return 0;
 }
 
 static int led_release (struct inode *inode, struct file *file)
 {
-    char *buf = "open";
     file->private_data = led_devp;
-	//sprintf(led_devp->state,"%s","opened");
-	strcpy(led_devp->state,"opened");
+	strcpy(led_devp->state,"released");
 	printk("led %s.\n",led_devp->state);
     return 0;
 }
@@ -77,27 +77,31 @@ static ssize_t led_write (struct file *file, const char __user *buf, size_t coun
 		{
 			strcpy(dev->state,"on");
 		    gpio_set_value(gpioLED, true);
+			atomic_add(1,&(dev->numberLed));
 		}
     else if(val == 0)
     	{
     	    strcpy(dev->state,"off");
-    	    gpio_set_value(gpioLED, false);			
+    	    gpio_set_value(gpioLED, false);
+			atomic_sub(1,&(dev->numberLed));
     	}
 	else
 		{
 		    strcpy(dev->state,"invalid");
 		}
-	printk("writing led %s.\n",dev->state);
+	printk("writing led %s and numberLed is %d.\n",dev->state,atomic_read(&(dev->numberLed)));
     return 0;
 }
 
 static ssize_t led_read (struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
     int val;
+	char *kbuf[BUF_SIZE];
 	struct led_dev *dev = file->private_data;
     val = gpio_get_value(gpioKEY);
-	copy_to_user(buf,dev->state,count);
-	printk("reading led %s.\n",dev->state);
+	sprintf(kbuf,"state:%s numberLed:%d",dev->state,atomic_read(&(dev->numberLed)));
+	copy_to_user(buf,kbuf,count);
+	printk("reading led %s.\n",kbuf);
     return 0;
 }
 
