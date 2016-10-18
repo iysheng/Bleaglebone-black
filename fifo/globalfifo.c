@@ -15,6 +15,7 @@
 #include <linux/cdev.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/printk.h>
 
 
 MODULE_LICENSE("GPL");
@@ -34,16 +35,18 @@ static dev_t devnum;
 struct globalfifo_dev{
     struct cdev cdev;
 	int cur_len;
+	int r_times;
 	char mem[GLOBALFIFO_SIZE];
 	struct mutex mutex;
+	struct device *globalfifo_device;
 	wait_queue_head_t r_wait;
 	wait_queue_head_t w_wait;
 };
 
 struct globalfifo_dev *globalfifo_devp;
-
 static struct class *globalfifo_class;
-static struct device *globalfifo_device[GLOBALFIFO_NUM];
+
+//static struct device *globalfifo_device[GLOBALFIFO_NUM];
 
 static int globalfifo_open(struct inode *inode, struct file *filp)
 {
@@ -54,24 +57,32 @@ static int globalfifo_open(struct inode *inode, struct file *filp)
 static ssize_t globalfifo_read(struct file *filp, char __user *buf, size_t count, loff_t *ppos)
 {
     int ret = 0;
+	
 	unsigned long p = *ppos;
-	unsigned int size = count;
+	int size = count;    
 	struct globalfifo_dev *devp_tmp = filp->private_data;
+	devp_tmp->r_times ++;
+	
+	printk(KERN_INFO "BEFORE ppos is %lu,size is %d\nr_times is %d", p, size, devp_tmp->r_times);
 
 	if(p >= GLOBALFIFO_SIZE)
 	{
 	    printk("buf longer than size\n");
 		return 0;
 	}
-	if(size > GLOBALFIFO_SIZE - p)
-		size = GLOBALFIFO_SIZE - p;
-	if(copy_to_user(buf, devp_tmp->mem + p, size))
-		ret = -EFAULT;
 	else
 	{
-		ret = size;
-		printk(KERN_INFO "read %u bytes from %lu", size, p);
+	    size = (size > GLOBALFIFO_SIZE - p) ? GLOBALFIFO_SIZE - p : count;
+	    if(copy_to_user(buf, devp_tmp->mem, size))
+		    ret = -EFAULT;
+	    else
+	    {
+		    ret = size;
+		    //printk(KERN_INFO "read %u bytes from %lu", size, p);
+	    }
+	        printk(KERN_INFO "AFTER ppos is %lu,size is %d\nr_times is %d", p, size, devp_tmp->r_times);
 	}
+	//copy_to_user(buf, devp_tmp->mem, count);
 	return ret;
 }
 static ssize_t globalfifo_write (struct file *filp, const char __user *buf, size_t count, loff_t *ppos)
@@ -143,8 +154,8 @@ static long globalfifo_ioctl(struct file *filp,unsigned int cmd,unsigned long ar
     struct globalfifo_dev *devp_tmp = filp->private_data;
 	switch(cmd)
 	{
-	    //case MEM_CLEAR:
-	    case 0:
+	    case MEM_CLEAR:
+	    //case 0:
 			memset(devp_tmp->mem, 0, GLOBALFIFO_SIZE);
 			printk(KERN_INFO "globalfifo has been cleared.\n");
 			break;
@@ -174,24 +185,30 @@ static struct file_operations globalfifo_fops = {
 static void globalfifo_setup(struct globalfifo_dev *devp,int index)
 {
     char name_buf[NAME_SIZE];
-	int err;
-
-	cdev_init(&devp->cdev,&globalfifo_fops);
-	devnum = MKDEV(major,index);
-	devp->cdev.owner = THIS_MODULE;
-	err = cdev_add(&devp->cdev,devnum,1);
-	if(err)
-		printk(KERN_INFO "Error %d adding globalfifo%d", err, index);
+    int ret;
+	devnum = MKDEV(major,index);	
 	sprintf(name_buf,"globalfifo%d",index);
-	globalfifo_device[index] = device_create(globalfifo_class,NULL,devnum,NULL,name_buf);
+	cdev_init(&devp->cdev,&globalfifo_fops);
+	devp->cdev.owner = THIS_MODULE;
+	ret = cdev_add(&devp->cdev,devnum,1);
+	if(ret)
+	{
+		printk(KERN_INFO "Error %d adding globalfifo%d", ret, index);
+	}
+	else
+	//globalfifo_device[index] = 	
+	devp->globalfifo_device = device_create(globalfifo_class,NULL,devnum,NULL,name_buf);	
 }
 
 static int __init globalfifo_init(void)
 {
     int i,ret = 0;	
-	devnum = MKDEV(major,0);
+	
 	if(major)
+	{
+	    devnum = MKDEV(major,0);
 		ret = register_chrdev_region(devnum,GLOBALFIFO_NUM,"globalfifo");
+	}
 	else
 	{
 	    ret = alloc_chrdev_region(&devnum,0,GLOBALFIFO_NUM,"globalfifo");
@@ -200,7 +217,6 @@ static int __init globalfifo_init(void)
 	if(ret < 0)
 		goto fail;
 	globalfifo_devp = kzalloc(sizeof(struct globalfifo_dev) * GLOBALFIFO_NUM,GFP_KERNEL);
-	globalfifo_device[0] = kzalloc(sizeof(struct device) * GLOBALFIFO_NUM,GFP_KERNEL);
 	if(!globalfifo_devp)
 	{
 	    ret = ENOMEM;
@@ -213,7 +229,6 @@ static int __init globalfifo_init(void)
 	}
     printk(KERN_INFO "fifo test begin and the major is %d!\n",major);
     fail:
-	unregister_chrdev_region(devnum,GLOBALFIFO_NUM);
 	return ret;
 }
 
@@ -222,10 +237,12 @@ static void __exit globalfifo_exit(void)
     int i;
     for(i=0; i<GLOBALFIFO_NUM; i++)
     {
+        device_destroy(globalfifo_class,devnum);
 	    cdev_del(&(globalfifo_devp + i)->cdev);
 		devnum = MKDEV(major,i);
-	    unregister_chrdev_region(devnum,1);
+	    unregister_chrdev_region(devnum,1);		
     }
+	class_destroy(globalfifo_class);
     kfree(globalfifo_devp);
     printk(KERN_INFO "fifo test over!\n");
 }
