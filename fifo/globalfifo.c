@@ -25,7 +25,7 @@ MODULE_VERSION("0.1");
 
 #define GLOBALFIFO_SIZE 64
 #define NAME_SIZE 16
-#define GLOBALFIFO_NUM 3
+#define GLOBALFIFO_NUM 1
 #define GLOBALFIFO_MAGIC 'f'
 #define MEM_CLEAR _IO(GLOBALFIFO_MAGIC,0)
 
@@ -52,37 +52,60 @@ static int globalfifo_open(struct inode *inode, struct file *filp)
 {
 	struct globalfifo_dev *globalfifo_devp_tmp = container_of(inode->i_cdev, struct globalfifo_dev, cdev);
 	filp->private_data = globalfifo_devp_tmp;
+	mutex_init(&globalfifo_devp_tmp->mutex);
+	init_waitqueue_head(&globalfifo_devp_tmp->r_wait);
+	init_waitqueue_head(&globalfifo_devp_tmp->w_wait);
 	return 0;
 }
 static ssize_t globalfifo_read(struct file *filp, char __user *buf, size_t count, loff_t *ppos)
 {
     int ret = 0;
-	
 	unsigned long p = *ppos;
 	int size = count;    
 	struct globalfifo_dev *devp_tmp = filp->private_data;
 	devp_tmp->r_times ++;
 	
-	printk(KERN_INFO "BEFORE ppos is %lu,size is %d\nr_times is %d", p, size, devp_tmp->r_times);
+	printk(KERN_INFO "BEFORE ppos is %lu,size is %d,r_times is %d,,cur_len is %d\n", p, size, devp_tmp->r_times,devp_tmp->cur_len);
+    DECLARE_WAITQUEUE(wait,current);
+	mutex_lock(&devp_tmp->mutex);
+	add_wait_queue(&devp_tmp->r_wait,&wait);
 
-	if(p >= GLOBALFIFO_SIZE)
+	while(devp_tmp->cur_len == 0)
 	{
-	    printk("buf longer than size\n");
-		return 0;
+	    if(filp->f_flags & O_NONBLOCK)
+	    {
+	        ret = -EAGAIN;
+			goto out;
+	    }
+		__set_current_state(TASK_INTERRUPTIBLE);
+		mutex_unlock(&devp_tmp->mutex);
+		schedule();
+		if(signal_pending(current))
+		{
+		    ret = -ERESTARTSYS;
+			goto again;
+		}
+		mutex_lock(&devp_tmp->mutex);
+	}
+    size = (size > devp_tmp->cur_len) ? devp_tmp->cur_len : size;
+	if(copy_to_user(buf, devp_tmp->mem, size))
+	{
+	    ret = -EFAULT;
+	    goto out;
 	}
 	else
-	{
-	    size = (size > GLOBALFIFO_SIZE - p) ? GLOBALFIFO_SIZE - p : count;
-	    if(copy_to_user(buf, devp_tmp->mem, size))
-		    ret = -EFAULT;
-	    else
-	    {
-		    ret = size;
-		    //printk(KERN_INFO "read %u bytes from %lu", size, p);
-	    }
-	        printk(KERN_INFO "AFTER ppos is %lu,size is %d\nr_times is %d", p, size, devp_tmp->r_times);
-	}
-	//copy_to_user(buf, devp_tmp->mem, count);
+    {
+        memcpy(devp_tmp->mem,devp_tmp->mem+size,devp_tmp->cur_len - size);
+		devp_tmp->cur_len -= size;
+		wake_up_interruptible(&devp_tmp->w_wait);
+		ret = size;
+    }
+	    printk(KERN_INFO "AFTER ppos is %lu,size is %d,r_times is %d,cur_len is %d\n", p, size, devp_tmp->r_times, devp_tmp->cur_len);
+	out:
+	mutex_unlock(&devp_tmp->mutex);
+	again:
+	remove_wait_queue(&devp_tmp->r_wait,&wait);
+	set_current_state(TASK_RUNNING);
 	return ret;
 }
 static ssize_t globalfifo_write (struct file *filp, const char __user *buf, size_t count, loff_t *ppos)
@@ -91,21 +114,45 @@ static ssize_t globalfifo_write (struct file *filp, const char __user *buf, size
 	unsigned long p = *ppos;
 	unsigned int size = count;
 	struct globalfifo_dev * devp_tmp = filp->private_data;
-	if(p > GLOBALFIFO_SIZE)
-	{
-	    printk("buf longer than size.\n");
-		return 0;
+	DECLARE_WAITQUEUE(wait,current);
+	mutex_lock(&devp_tmp->mutex);
+	add_wait_queue(&devp_tmp->w_wait, &wait);
+    while(devp_tmp->cur_len == GLOBALFIFO_SIZE)
+    {
+        if(filp->f_flags & O_NONBLOCK)
+	    {
+	        ret = -EAGAIN;
+			goto out;
+	    }
+		__set_current_state(TASK_INTERRUPTIBLE);
+		mutex_unlock(&devp_tmp->mutex);
+		schedule();
+		if(signal_pending(current))
+		{
+		    ret = -ERESTARTSYS;
+			goto again;
+		}
+		mutex_lock(&devp_tmp->mutex);
     }
-	if(size > GLOBALFIFO_SIZE - p)
-		size = GLOBALFIFO_SIZE - p;
+	size = (size > GLOBALFIFO_SIZE - devp_tmp->cur_len) ? GLOBALFIFO_SIZE - devp_tmp->cur_len : size;
 	if(copy_from_user(devp_tmp->mem + p, buf, size))
-		ret = -EFAULT;
+	{
+	    ret = -EFAULT;
+		goto out;
+	}
 	else
 	{
-	    *ppos += size;
+	    devp_tmp->cur_len += size;
+		wake_up_interruptible(&devp_tmp->r_wait);
+		printk(KERN_INFO "written %u bytes from %lu\n", size, p);
+		//*ppos += size;
 		ret = size;
-		printk(KERN_INFO "written %u bytes from %lu", size, p);
 	}
+	out:
+	mutex_unlock(&devp_tmp->mutex);
+	again:
+	remove_wait_queue(&devp_tmp->w_wait,&wait);
+	set_current_state(TASK_RUNNING);
 	return ret;
 }
 
@@ -195,8 +242,7 @@ static void globalfifo_setup(struct globalfifo_dev *devp,int index)
 	{
 		printk(KERN_INFO "Error %d adding globalfifo%d", ret, index);
 	}
-	else
-	//globalfifo_device[index] = 	
+	else	
 	devp->globalfifo_device = device_create(globalfifo_class,NULL,devnum,NULL,name_buf);	
 }
 
