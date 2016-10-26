@@ -4,20 +4,6 @@
  * @date   2016.10.17
 */
 
-/*
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/gpio.h>                 // Required for the GPIO functions
-#include <linux/uaccess.h>
-#include <linux/fs.h>
-#include <linux/interrupt.h>
-#include <linux/string.h>
-#include <linux/cdev.h>
-#include <linux/slab.h>
-#include <linux/printk.h>
-#include <linux/platform_device.h>
-#include <linux/d
 
 #include <linux/module.h>
 #include <linux/types.h>
@@ -233,7 +219,6 @@ static long globalfifo_ioctl(struct file *filp,unsigned int cmd,unsigned long ar
 static int globalfifo_release (struct inode *inode, struct file *filp)
 {
     int ret = 0;
-	//init_flag = true;
     return ret;
 }
 
@@ -264,6 +249,7 @@ static void globalfifo_setup(struct globalfifo_dev *devp,int index)
 	else	
 	    devp->globalfifo_device = device_create(globalfifo_class,NULL,devnum,NULL,name_buf);	
 }
+
 static int __init globalfifo_init(void)
 {
     int i,ret = 0;	
@@ -314,6 +300,5 @@ static void __exit globalfifo_exit(void)
 
 
 module_init(globalfifo_init);
-module_exit(globalfifo_exit);evice.h>
-*/
+module_exit(globalfifo_exit);
 
